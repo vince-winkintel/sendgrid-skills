@@ -14,6 +14,13 @@
 - Base64-encode content.
 - Include `type` (MIME) when known.
 - Keep payload sizes reasonable; avoid large attachments unless necessary.
+- SendGrid limits: max 30 MB total payload; keep attachments under that cap.
+
+## Rate Limits
+
+- **429**: rate limited — retry with exponential backoff.
+- **5xx**: server error — retry with exponential backoff.
+- **400/401/403/422**: fix request or credentials; do **not** retry.
 
 ## Idempotency
 

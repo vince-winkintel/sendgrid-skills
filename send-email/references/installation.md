@@ -77,3 +77,8 @@ curl -X POST "https://api.sendgrid.com/v3/mail/send" \
   -H "Content-Type: application/json" \
   -d '{"personalizations":[{"to":[{"email":"vince@winkintel.com"}]}],"from":{"email":"support@winkintel.com"},"subject":"Hello","content":[{"type":"text/plain","value":"Hi"}]}'
 ```
+
+## Templates (Dynamic)
+
+Dynamic templates are referenced by `template_id` and optional `dynamic_template_data`.
+See: <https://docs.sendgrid.com/ui/sending-email/how-to-send-an-email-with-dynamic-templates>

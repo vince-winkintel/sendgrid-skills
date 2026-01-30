@@ -34,7 +34,12 @@ SendGrid provides a single **Mail Send** endpoint for sending email via the v3 A
 
 | Parameter | Type | Description |
 |----------|------|-------------|
+| `cc` | string or string[] | CC recipients |
+| `bcc` | string or string[] | BCC recipients |
+| `reply_to` | string | Reply-to address |
 | `attachments` | array | Base64-encoded attachments |
+| `template_id` | string | Dynamic template ID (if using templates) |
+| `dynamic_template_data` | object | Template data (if using templates) |
 
 ## Minimal Example (Node.js)
 
@@ -52,10 +57,24 @@ await sgMail.send({
 });
 ```
 
+## Templates (Dynamic Templates)
+
+If using SendGrid Dynamic Templates, supply `template_id` and `dynamic_template_data` instead of `html`/`text`.
+
+```ts
+await sgMail.send({
+  from: 'Support <support@winkintel.com>',
+  to: 'vince@winkintel.com',
+  templateId: 'd-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
+  dynamicTemplateData: { first_name: 'Vince' },
+});
+```
+
 ## Best Practices (Short)
 
 - Always set **both** `text` and `html` when possible (deliverability + accessibility).
 - Retry **only** on 429 or 5xx errors with exponential backoff.
+- Use verified senders; unverified domains will fail.
 - Avoid fake addresses at real providers; test with addresses you control.
 
 For deeper details, see:
