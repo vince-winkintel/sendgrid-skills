@@ -17,6 +17,14 @@ SendGrid provides a single **Mail Send** endpoint for sending email via the v3 A
 
 ## Quick Start
 
+### Test Your Configuration First
+```bash
+# Validate API key and send test email
+../scripts/send-test-email.sh recipient@example.com
+```
+
+**Then integrate:**
+
 1. **Detect project language** (package.json, requirements.txt, go.mod, etc.)
 2. **Install SDK** (preferred) or use cURL - See [references/installation.md](references/installation.md)
 3. **Prepare message** with `from`, `to`, `subject`, and `text` or `html`

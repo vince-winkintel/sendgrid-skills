@@ -15,10 +15,24 @@ SendGrid's **Inbound Parse Webhook** receives emails for a specific hostname/sub
 
 ## Quick Start
 
+### Verify Your Setup First
+```bash
+# Check MX record and test webhook
+../scripts/verify-inbound-setup.sh parse.example.com https://webhook.example.com/parse
+```
+
+**Then configure:**
+
 1. **Create MX record** pointing to `mx.sendgrid.net` for a dedicated hostname (recommended: subdomain).
 2. **Configure Inbound Parse** in SendGrid Console with a receiving domain + destination URL.
 3. **Handle the webhook**: parse `multipart/form-data`, read `text`, `html`, `headers`, and attachments.
 4. **Secure the endpoint** (basic auth, allowlists, size limits).
+
+### Parse Webhook Payloads
+```bash
+# Debug or test payload parsing
+node ../scripts/parse-webhook-payload.js < payload.txt
+```
 
 ## DNS / MX Setup
 
