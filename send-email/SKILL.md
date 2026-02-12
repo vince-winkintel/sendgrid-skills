@@ -1,6 +1,6 @@
 ---
 name: send-email
-description: Use when sending simple transactional emails or notifications via the SendGrid v3 Mail Send API.
+description: Send transactional emails and notifications via SendGrid v3 Mail Send API. Supports simple emails, HTML/text content, attachments, CC/BCC, dynamic templates, and personalization. Use when sending welcome emails, password resets, receipts, notifications, or any programmatic email. Triggers on send email, transactional email, SendGrid send, email notification, welcome email, password reset email, email template, dynamic template.
 ---
 
 # Send Email with SendGrid
@@ -13,6 +13,7 @@ SendGrid provides a single **Mail Send** endpoint for sending email via the v3 A
 - Sending transactional emails (welcome, password reset, receipts)
 - Sending simple notifications
 - You need basic text/HTML emails with optional attachments
+- Using dynamic templates for personalized content
 
 ## Quick Start
 
@@ -70,6 +71,57 @@ await sgMail.send({
 });
 ```
 
+## Decision: Plain Send vs Dynamic Templates?
+
+```
+How complex is your email?
+├─ Simple, one-off message
+│  └─ Plain send (html/text) ✅
+├─ Reusable design with variables
+│  └─ Dynamic Template ✅
+└─ Personalized at scale
+   └─ Dynamic Template with merge tags ✅
+```
+
+**Use plain send when:**
+- Quick, simple messages
+- Content changes every time
+- No design reusability needed
+
+**Use dynamic templates when:**
+- Consistent design across emails
+- Variable substitution (names, dates, etc.)
+- Non-technical teams manage email content
+- A/B testing email designs
+
+## Troubleshooting
+
+**"401 Unauthorized":**
+- API key invalid or missing
+- Check `SENDGRID_API_KEY` environment variable
+- Verify key has mail send permissions
+
+**"403 Forbidden":**
+- Sender email not verified
+- Go to SendGrid Console → Settings → Sender Authentication
+- Verify single sender or authenticate domain
+
+**"429 Too Many Requests":**
+- Rate limit exceeded
+- Implement exponential backoff (retry after 1s, 2s, 4s...)
+- Consider upgrading SendGrid plan
+
+**"500/503 Service Errors":**
+- SendGrid temporary service issue
+- Retry with exponential backoff
+- Check SendGrid status page
+
+**Emails not arriving:**
+- Check recipient spam folder
+- Verify sender domain authentication (SPF/DKIM)
+- Use both `text` and `html` for better deliverability
+- Avoid spam trigger words in subject/body
+
 ## Best Practices (Short)
 
 - Always set **both** `text` and `html` when possible (deliverability + accessibility).
@@ -80,3 +132,9 @@ await sgMail.send({
 For deeper details, see:
 - [references/best-practices.md](references/best-practices.md)
 - [references/single-email-examples.md](references/single-email-examples.md)
+
+## Related Skills
+
+**Receiving email responses:**
+- See `sendgrid-inbound` for handling incoming emails via Inbound Parse Webhook
+- Common use case: Auto-reply systems, support ticket creation from email

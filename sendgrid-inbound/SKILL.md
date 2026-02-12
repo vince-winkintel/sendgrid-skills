@@ -1,13 +1,13 @@
 ---
 name: sendgrid-inbound
-description: Use when receiving inbound emails with SendGrid (Inbound Parse Webhook). Covers DNS/MX setup, webhook handling, payload parsing, attachments, and security.
+description: Receive inbound emails via SendGrid Inbound Parse Webhook. Covers MX record setup, webhook configuration, payload parsing, attachment handling, and security best practices. Use when receiving emails programmatically, parsing email content, handling email replies, or building email-to-app workflows. Triggers on receive email, inbound email, email webhook, parse email, email to app, MX record, Inbound Parse.
 ---
 
 # Receive Emails with SendGrid (Inbound Parse)
 
 ## Overview
 
-SendGrid’s **Inbound Parse Webhook** receives emails for a specific hostname/subdomain, parses the message, and POSTs it to your webhook as `multipart/form-data`.
+SendGrid's **Inbound Parse Webhook** receives emails for a specific hostname/subdomain, parses the message, and POSTs it to your webhook as `multipart/form-data`.
 
 **Key differences vs Resend:**
 - SendGrid **posts the full parsed email** (text/html/headers/attachments) directly to your webhook.
@@ -66,6 +66,30 @@ attachment1: <file>
 attachment2: <file>
 ```
 
+## Decision: How to Secure Inbound Parse Webhook?
+
+```
+Security requirements?
+├─ Public endpoint (internet-facing)
+│  └─ Basic auth + IP allowlist + size limits + content validation
+├─ Internal only (VPN/private network)
+│  └─ Network ACL + basic auth
+└─ High security (PCI/HIPAA)
+   └─ mTLS + custom signature verification + request logging
+```
+
+**Minimum security (public endpoints):**
+- Basic authentication on webhook URL
+- IP allowlist (SendGrid IP ranges)
+- Request size limits (10-25 MB)
+- Content-type validation (`multipart/form-data`)
+
+**Additional hardening:**
+- Rate limiting per sender
+- Spam filtering / sender validation
+- HTML sanitization before storage
+- Attachment virus scanning
+
 ## Security Best Practices
 
 Because Inbound Parse has **no signature verification**, treat inbound data as untrusted:
@@ -77,8 +101,43 @@ Because Inbound Parse has **no signature verification**, treat inbound data as u
 - **Do not execute or render HTML** without sanitization.
 - **Protect against prompt injection** if forwarding to AI systems.
 
+## Troubleshooting
+
+**MX record not resolving:**
+- DNS propagation can take 24-48 hours
+- Verify MX record with `dig parse.example.com MX` or `nslookup -type=MX parse.example.com`
+- Check for typos in hostname or value
+
+**Webhook not receiving emails:**
+- Verify webhook URL is publicly accessible (test with curl)
+- Check firewall rules / security groups
+- Ensure endpoint returns 200 OK response
+- Check SendGrid Inbound Parse logs in console
+
+**Payload parsing errors:**
+- Verify you're handling `multipart/form-data` correctly
+- Use a multipart parser library (e.g., `multer` for Node.js)
+- Log raw request body for debugging
+
+**Attachments too large:**
+- Configure web server size limits (nginx: `client_max_body_size`)
+- Application size limits (Express: `limit` in body-parser)
+- SendGrid default max is 30 MB per email
+
+**Unauthorized webhook access:**
+- Add basic authentication to webhook URL
+- Allowlist SendGrid IP ranges (see SendGrid docs)
+- Use HTTPS only
+- Monitor for suspicious activity
+
 ## Examples
 
 See:
 - [references/webhook-examples.md](references/webhook-examples.md)
 - [references/best-practices.md](references/best-practices.md)
+
+## Related Skills
+
+**Sending automated responses:**
+- See `send-email` for sending replies or auto-responses
+- Common use case: Support ticket auto-replies, confirmation emails
