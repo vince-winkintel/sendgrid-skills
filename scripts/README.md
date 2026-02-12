@@ -16,10 +16,10 @@ Send a test email to validate SendGrid API key and configuration.
 **Examples:**
 ```bash
 # Simple test
-./scripts/send-test-email.sh vince@example.com
+./scripts/send-test-email.sh test@example.com
 
 # Custom subject and message
-./scripts/send-test-email.sh vince@example.com "Test Subject" "Test message body"
+./scripts/send-test-email.sh test@example.com "Test Subject" "Test message body"
 ```
 
 **Environment variables:**
@@ -179,7 +179,7 @@ curl https://webhook.example.com/parse | node scripts/parse-webhook-payload.js
 # 1. Test API key
 export SENDGRID_API_KEY=SG.xxxxxxxxx
 export SENDGRID_FROM=support@example.com
-./scripts/send-test-email.sh vince@example.com
+./scripts/send-test-email.sh test@example.com
 
 # 2. If successful, integrate into application
 # (API key is valid and sender is verified)
