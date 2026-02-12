@@ -141,6 +141,14 @@ For deeper details, see:
 - [references/best-practices.md](references/best-practices.md)
 - [references/single-email-examples.md](references/single-email-examples.md)
 
+## Automation Scripts
+
+**Quick testing:**
+- `scripts/send-test-email.sh` - Send plain text test email (API key validation)
+- `scripts/send-html-email.sh` - Send HTML email (newsletters, reports, formatted content)
+
+See [scripts/README.md](../scripts/README.md) for usage examples.
+
 ## Related Skills
 
 **Receiving email responses:**
