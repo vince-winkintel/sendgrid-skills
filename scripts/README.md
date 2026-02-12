@@ -28,14 +28,63 @@ Send a test email to validate SendGrid API key and configuration.
 
 **What it does:**
 - Validates API key is set
-- Sends email via SendGrid Mail Send API
+- Sends plain text email via SendGrid Mail Send API
 - Reports success/failure with helpful error messages
 - Handles common errors (401, 403, 429, 500)
+
+**Limitations:**
+- Plain text only (no HTML)
+- For HTML emails, use `send-html-email.sh`
 
 **Common errors:**
 - **401 Unauthorized**: API key invalid or missing Mail Send permissions
 - **403 Forbidden**: Sender email not verified (verify at SendGrid Console)
 - **429 Too Many Requests**: Rate limit exceeded
+
+---
+
+### 📧 send-html-email.sh
+
+Send HTML-formatted email via SendGrid API.
+
+**Usage:**
+```bash
+./scripts/send-html-email.sh <recipient> <subject> <html-content-or-file>
+```
+
+**Examples:**
+```bash
+# Send HTML string
+./scripts/send-html-email.sh user@example.com "Welcome" "<h1>Hello!</h1><p>Welcome to our service.</p>"
+
+# Send HTML file
+./scripts/send-html-email.sh user@example.com "Daily Report" /path/to/report.html
+
+# With custom sender
+export SENDGRID_FROM="noreply@example.com"
+./scripts/send-html-email.sh user@example.com "Newsletter" newsletter.html
+```
+
+**Environment variables:**
+- `SENDGRID_API_KEY` - SendGrid API key (required)
+- `SENDGRID_FROM` - Sender email (default: test@example.com)
+
+**What it does:**
+- Accepts HTML string or file path
+- Properly escapes special characters (quotes, newlines, etc.)
+- Sends HTML email with `text/html` content type
+- Uses `jq` for safe JSON construction
+
+**Use cases:**
+- Daily reports/summaries
+- Newsletters
+- Formatted notifications
+- Rich content emails
+
+**Benefits over send-test-email.sh:**
+- Handles complex HTML with special characters
+- Supports file input (easier for large templates)
+- Proper JSON escaping via `jq`
 
 ---
 
@@ -137,6 +186,11 @@ Validate configuration in seconds without writing code.
 - `curl` command
 - `SENDGRID_API_KEY` environment variable
 
+### send-html-email.sh
+- `curl` command
+- `jq` command (for JSON escaping)
+- `SENDGRID_API_KEY` environment variable
+
 ### verify-inbound-setup.sh
 - `dig` or `nslookup` command
 - `curl` command (for webhook testing)
@@ -148,7 +202,7 @@ Validate configuration in seconds without writing code.
 
 Scripts are referenced from relevant skills:
 
-- **send-email** skill → `send-test-email.sh`
+- **send-email** skill → `send-test-email.sh`, `send-html-email.sh`
 - **sendgrid-inbound** skill → `verify-inbound-setup.sh`, `parse-webhook-payload.js`
 
 ## Error Handling
