@@ -67,12 +67,37 @@ fi
 # Set default sender if not provided
 FROM_EMAIL="${SENDGRID_FROM:-test@example.com}"
 
+# Security: Validate file path inputs to prevent arbitrary file read.
+# If HTML_INPUT looks like a file path (starts with / or ./, or -f resolves it as a file),
+# we validate before reading:
+#   - Must end in .html or .htm (no reading arbitrary system files)
+#   - Must not contain .. (no directory traversal)
+#   - Must resolve to a real, existing file via realpath
+if [[ "$HTML_INPUT" == /* ]] || [[ "$HTML_INPUT" == ./* ]] || [[ -f "$HTML_INPUT" ]]; then
+  # Reject directory traversal attempts
+  if [[ "$HTML_INPUT" == *..* ]]; then
+    echo "❌ Error: File path must not contain '..' (directory traversal is not allowed)"
+    exit 1
+  fi
+  # Require .html or .htm extension
+  if [[ "$HTML_INPUT" != *.html ]] && [[ "$HTML_INPUT" != *.htm ]]; then
+    echo "❌ Error: File path must end in .html or .htm"
+    exit 1
+  fi
+  # Resolve to canonical path and confirm it exists
+  RESOLVED_PATH=$(realpath --canonicalize-existing "$HTML_INPUT" 2>/dev/null) || {
+    echo "❌ Error: File not found or path could not be resolved: $HTML_INPUT"
+    exit 1
+  }
+  HTML_INPUT="$RESOLVED_PATH"
+fi
+
 # Determine if input is file or string
 if [[ -f "$HTML_INPUT" ]]; then
-  # Input is a file
+  # Input is a validated file path — read its contents
   HTML_CONTENT=$(cat "$HTML_INPUT")
 else
-  # Input is a string
+  # Input is an inline HTML string
   HTML_CONTENT="$HTML_INPUT"
 fi
 
