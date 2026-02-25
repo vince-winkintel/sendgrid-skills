@@ -13,6 +13,17 @@ requirements:
   binaries_optional:
     - dig
     - nslookup
+metadata:
+  openclaw:
+    requires:
+      env:
+        - SENDGRID_API_KEY
+      bins:
+        - curl
+        - jq
+        - node
+    notes: |
+      Scripts operate on user-provided file paths (send-html-email.sh) and network endpoints (verify-inbound-setup.sh). Review scripts before executing. Use a SendGrid API key scoped to Mail Send only.
 ---
 
 # SendGrid

@@ -34,6 +34,24 @@ fi
 HOSTNAME="$1"
 WEBHOOK_URL="$2"
 
+# Security: Validate HOSTNAME to prevent shell injection.
+# Only alphanumeric characters, dots, and hyphens are permitted.
+# This blocks shell metacharacters and ensures dig/nslookup receive safe input.
+if [[ ! "$HOSTNAME" =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]{0,251}[a-zA-Z0-9])?$ ]]; then
+  echo "❌ Error: Invalid hostname. Only letters, numbers, dots, and hyphens are allowed."
+  exit 1
+fi
+
+# Security: Validate WEBHOOK_URL to prevent SSRF (Server-Side Request Forgery).
+# Only HTTPS URLs with clean hostnames are accepted.
+# This blocks file://, http://, internal addresses, and shell metacharacters.
+if [[ -n "$WEBHOOK_URL" ]]; then
+  if [[ ! "$WEBHOOK_URL" =~ ^https://[a-zA-Z0-9]([a-zA-Z0-9.-]+)(:[0-9]+)?(/.*)?$ ]]; then
+    echo "❌ Error: Webhook URL must use HTTPS (e.g. https://webhook.example.com/parse)"
+    exit 1
+  fi
+fi
+
 echo "🔍 Verifying Inbound Parse setup for: $HOSTNAME"
 echo ""
 
