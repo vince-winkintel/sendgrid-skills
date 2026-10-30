@@ -58,6 +58,8 @@ Store in environment variable:
 export SENDGRID_API_KEY=SG.xxxxxxxxx
 ```
 
+The optional send helpers require Bash 3.2+, curl and jq 1.6+ (`--rawfile`); HTML file input also requires `realpath`.
+
 ### SDK Installation
 
 See `send-email` skill for installation instructions across supported languages.

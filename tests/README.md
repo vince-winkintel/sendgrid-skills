@@ -1,6 +1,6 @@
 # Offline security regressions
 
-Requires Python 3 (standard library only), Bash, jq, Node.js and ordinary shell utilities. No dependency installation or credentials are needed. From the repository root, use an existing writable scratch directory:
+Requires Python 3 (standard library only), Bash 3.2+, jq 1.6+, Node.js and ordinary shell utilities. No dependency installation or credentials are needed. From the repository root, use an existing writable scratch directory:
 
 ```bash
 python3 tests/test_security.py --scratch /path/to/scratch -v
@@ -42,3 +42,20 @@ four-argument unknown-option rejection, and preserve `--html '--dry-run'` as lit
 MX tests cover both dig and nslookup fixtures, exact normalized exchange fields,
 lookalikes/malformed answers and lookup failures. Line-ending tests preserve the
 plain part and render CRLF, LF and CR as HTML breaks after escaping.
+
+Select the exact installed runtimes when checking version-specific behavior:
+
+```bash
+python3 tests/test_security.py --scratch /path/to/scratch --bash /bin/bash --jq /usr/bin/jq -v
+# If Homebrew jq is already installed, repeat with --jq /opt/homebrew/bin/jq.
+```
+
+The harness reports the selected binary paths and versions. UTF-8 fixtures check
+accented, BMP and astral characters at byte offsets 4092–4100 in recipient, sender,
+subject and body fields in both helpers, plus long single-line HTML files larger
+than a process argument limit. Exact recorded payloads and encoder/transport argv
+are checked; no decoder receives payload data on argv. Encoder partial-output and
+real descriptor-read failures must stop before transport and preserve exit status.
+Unrelated stdin (including NUL) must not enter the JSON. Shell arguments themselves
+cannot contain NUL. Missing uppercase/mixed-case HTML filenames are rejected while
+explicit `--html` literals, markup and non-HTML prose retain their existing behavior.

@@ -18,6 +18,8 @@ import unittest
 options = argparse.ArgumentParser(add_help=False)
 options.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
 options.add_argument("--scratch", type=Path, required=True)
+options.add_argument("--jq", default=shutil.which("jq"), help="Exact jq executable under test")
+options.add_argument("--bash", default=shutil.which("bash"), help="Exact Bash executable under test")
 OPTIONS, TEST_ARGS = options.parse_known_args()
 ROOT = OPTIONS.root.resolve()
 
@@ -58,7 +60,7 @@ class HelperTests(unittest.TestCase):
         self.bin.mkdir()
         self.record = self.work / "transport.jsonl"
         for name in ("bash", "jq", "node", "cat", "head", "tail", "grep", "awk", "basename", "realpath"):
-            executable = shutil.which(name)
+            executable = getattr(OPTIONS, name) if name in ("bash", "jq") else shutil.which(name)
             if not executable:
                 self.fail("Required test dependency missing: " + name)
             (self.bin / name).symlink_to(executable)
@@ -161,7 +163,7 @@ class HelperTests(unittest.TestCase):
         (self.work / "directory.html").mkdir()
         (self.work / "wrong.txt").write_text("synthetic non-HTML")
         (self.work / "broken.html").symlink_to(self.work / "absent.html")
-        for argument in ("newsletter.html", "newsletter.htm", "subdir/report.html",
+        for argument in ("newsletter.html", "newsletter.htm", "NEWSLETTER.HTML", "report.Htm", "subdir/report.html",
                          "./absent.html", str(self.work / "absent.html"),
                          "../report.html", "report..html", "directory.html", "wrong.txt", "broken.html"):
             with self.subTest(argument=argument):
@@ -200,6 +202,7 @@ class HelperTests(unittest.TestCase):
 
     def test_send_payload_and_auth_stay_off_child_argv(self):
         self.record_encoder()
+        self.env["SENDGRID_FROM"] = "private-sender@example.com"
         for helper in ("send-test-email.sh", "send-html-email.sh"):
             with self.subTest(helper=helper):
                 self.record.unlink(missing_ok=True)
@@ -210,9 +213,30 @@ class HelperTests(unittest.TestCase):
                 self.assertEqual(call["args"][call["args"].index("--data-binary") + 1], "@-")
                 self.assertEqual(call["config"], 'header = "Authorization: Bearer SG.synthetic-regression-only"\n')
                 encoded_args = Path(self.env["ENCODER_RECORD"]).read_text()
-                for value in ("private@example.com", "private-subject", "private-body", self.env["SENDGRID_API_KEY"]):
+                for value in ("private@example.com", "private-subject", "private-body",
+                              self.env["SENDGRID_FROM"], self.env["SENDGRID_API_KEY"]):
                     self.assertNotIn(value, json.dumps(call["args"]) + encoded_args)
                 self.assertEqual(self.payload()["subject"], "private-subject")
+                argv = json.loads(encoded_args.splitlines()[-1])
+                self.assertEqual(len(argv), 14)
+                self.assertEqual(argv[0], "-n")
+                fields = ("to", "from", "subject", "message" if helper == "send-test-email.sh" else "html")
+                for index, field in enumerate(fields):
+                    start = 1 + index * 3
+                    self.assertEqual(argv[start:start + 2], ["--rawfile", field])
+                    self.assertRegex(argv[start + 2], r"^/dev/fd/\d+$")
+                args = call["args"].copy()
+                descriptor = args.index("--config") + 1
+                self.assertRegex(args[descriptor], r"^/dev/fd/\d+$")
+                args[descriptor] = "<descriptor>"
+                post = (["-X", "POST", "https://api.sendgrid.com/v3/mail/send"]
+                        if helper == "send-test-email.sh" else
+                        ["--request", "POST", "--url", "https://api.sendgrid.com/v3/mail/send"])
+                header = "-H" if helper == "send-test-email.sh" else "--header"
+                self.assertEqual(args, ["--disable", "-sS", "--connect-timeout", "10", "--max-time", "60",
+                                        "--proto", "=https", "--noproxy", "*", "-w", r"\n%{http_code}",
+                                        *post, "--config", "<descriptor>", header,
+                                        "Content-Type: application/json", "--data-binary", "@-"])
 
     def test_large_html_file_does_not_use_process_argv_for_content(self):
         self.record_encoder()
@@ -236,6 +260,89 @@ class HelperTests(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertEqual(self.calls(), [])
                     self.assertNotIn(key, result.stdout + result.stderr)
+
+    def test_utf8_fields_survive_each_offset_near_4k(self):
+        # Catch raw-slurp corruption in any field, not only the message. Long
+        # synthetic addresses test encoding fidelity, not provider validation.
+        for helper in ("send-test-email.sh", "send-html-email.sh"):
+            for char in ("é", "雪", "😀"):
+                for offset in range(4092, 4101):
+                    with self.subTest(helper=helper, char=char, offset=offset):
+                        self.record.unlink(missing_ok=True)
+                        value = "a" * offset + char * 3000
+                        recipient = value + "@recipient.invalid"
+                        sender = value + "@sender.invalid"
+                        subject = value + " subject"
+                        body = value + " body"
+                        self.env["SENDGRID_FROM"] = sender
+                        args = ("--html", body) if helper == "send-html-email.sh" else (body,)
+                        result = self.run_helper(helper, recipient, subject, *args)
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        content = [{"type": "text/html", "value": body}]
+                        if helper == "send-test-email.sh":
+                            content = [{"type": "text/plain", "value": body},
+                                       {"type": "text/html", "value": "<p>" + body + "</p>"}]
+                        self.assertEqual(self.payload(), {
+                            "personalizations": [{"to": [{"email": recipient}]}],
+                            "from": {"email": sender}, "subject": subject, "content": content,
+                        })
+
+    def test_long_single_line_utf8_html_files_preserve_bytes(self):
+        self.record_encoder()
+        for char in ("é", "雪", "😀"):
+            for offset in range(4092, 4101):
+                with self.subTest(char=char, offset=offset):
+                    self.record.unlink(missing_ok=True)
+                    # Larger than Linux's per-argument limit; input stays in a file.
+                    content = "<p>" + "a" * (offset - 3) + char * 150000 + "</p>"
+                    path = self.work / "unicode.html"
+                    path.write_text(content, encoding="utf-8")
+                    result = self.run_helper("send-html-email.sh", "test@example.com", "Unicode", "--file", str(path))
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(self.payload()["content"][0]["value"].encode("utf-8"), path.read_bytes())
+        encoder_args = Path(self.env["ENCODER_RECORD"]).read_text()
+        self.assertNotIn("aaaa", encoder_args)
+        self.assertNotIn("--arg", encoder_args)
+
+    def test_encoder_failure_is_reported_before_transport(self):
+        (self.bin / "jq").unlink()
+        (self.bin / "jq").write_text("#!/bin/bash\nprintf '{partial'\nexit 42\n")
+        (self.bin / "jq").chmod(0o755)
+        for helper in ("send-test-email.sh", "send-html-email.sh"):
+            with self.subTest(helper=helper):
+                result = self.run_helper(helper, "test@example.com", "Test", "Body")
+                self.assertEqual(result.returncode, 42)
+                self.assertEqual(self.calls(), [])
+                self.assertIn("JSON encoding failed", result.stderr)
+                self.assertNotIn("Success!", result.stdout)
+
+    def test_unrelated_stdin_is_not_part_of_payload(self):
+        for helper in ("send-test-email.sh", "send-html-email.sh"):
+            with self.subTest(helper=helper):
+                self.record.unlink(missing_ok=True)
+                result = self.run_helper(helper, "test@example.com", "Test", "Body",
+                                         input="unrelated\0stdin\né雪😀")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.payload()["content"][0]["value"], "Body")
+
+    def test_encoder_descriptor_read_failure_stops_transport(self):
+        # Execute the selected real jq with an unavailable descriptor. This tests
+        # real encoder I/O failure separately from the partial-output exit stub.
+        executable = str((self.bin / "jq").resolve())
+        (self.bin / "jq").unlink()
+        (self.bin / "jq").write_text("#!" + sys.executable + "\n" +
+            "import os, sys\n" +
+            "args = sys.argv[1:]\n" +
+            "args[args.index('--rawfile') + 2] = '/dev/fd/9999'\n" +
+            "os.execv(" + repr(executable) + ", ['jq', *args])\n")
+        (self.bin / "jq").chmod(0o755)
+        for helper in ("send-test-email.sh", "send-html-email.sh"):
+            with self.subTest(helper=helper):
+                result = self.run_helper(helper, "test@example.com", "Test", "Body")
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(self.calls(), [])
+                self.assertIn("JSON encoding failed", result.stderr)
+                self.assertNotIn("Success!", result.stdout)
 
     def test_send_transport_is_bounded_and_does_not_follow_redirects_or_proxies(self):
         self.env.update(HTTPS_PROXY="http://proxy.invalid", ALL_PROXY="socks5://proxy.invalid")
@@ -275,6 +382,11 @@ class HelperTests(unittest.TestCase):
         for args, expected in [
             (("--file", "newsletter.html"), "file contents"),
             (("--html", "newsletter.html"), "newsletter.html"),
+            (("--html", "NEWSLETTER.HTML"), "NEWSLETTER.HTML"),
+            (("--html", "report.Htm"), "report.Htm"),
+            (("newsletter.txt",), "newsletter.txt"),
+            (("Ordinary prose",), "Ordinary prose"),
+            (("<p>See report</p> NEWSLETTER.HTML",), "<p>See report</p> NEWSLETTER.HTML"),
             (("--html", "--dry-run"), "--dry-run"),
             (("<p>See report</p> newsletter.html",), "<p>See report</p> newsletter.html"),
             (("--html", "./newsletter.html"), "./newsletter.html"),
@@ -529,4 +641,10 @@ class HelperTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
+    for name in ("bash", "jq"):
+        executable = getattr(OPTIONS, name)
+        if not executable or not Path(executable).is_file():
+            options.error("Required executable missing: " + str(executable))
+        version = subprocess.check_output([executable, "--version"], text=True).splitlines()[0]
+        print(name + ": " + str(Path(executable).resolve()) + " (" + version + ")", file=sys.stderr)
     unittest.main(argv=[sys.argv[0], *TEST_ARGS])

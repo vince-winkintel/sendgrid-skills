@@ -29,7 +29,7 @@ SendGrid provides a single **Mail Send** endpoint for sending email via the v3 A
 ../scripts/send-test-email.sh recipient@example.com
 ```
 
-The helper requires Bash, curl and jq. It sends immediately with no dry-run or approval prompt. Paths above assume the full repository layout. If only this subskill is installed, use the self-contained examples in [references/single-email-examples.md](references/single-email-examples.md); sibling scripts are optional, not an installation prerequisite.
+The helper requires Bash 3.2+, curl and jq 1.6+. It sends immediately with no dry-run or approval prompt. Paths above assume the full repository layout. If only this subskill is installed, use the self-contained examples in [references/single-email-examples.md](references/single-email-examples.md); sibling scripts are optional, not an installation prerequisite.
 
 **Then integrate:**
 

@@ -15,7 +15,7 @@ Send HTML-formatted email via SendGrid API.
 LIVE SEND: approve sender, recipients and exact content before running.
 Data goes to SendGrid and recipients; minimize sensitive data. Use a Mail Send-only key.
 Only read explicitly approved HTML files; path checks do not prevent sensitive-file disclosure.
-This helper has no dry-run or approval prompt. Requires curl, jq and realpath for files.
+This helper has no dry-run or approval prompt. Requires curl, jq 1.6+ and realpath for files.
 
 ARGUMENTS:
   recipient           Recipient email address
@@ -24,7 +24,8 @@ ARGUMENTS:
   --html              Treat content literally, even if it looks like a filename
   --file              Require an existing .html/.htm file
 
-Without a mode, paths and bare .html/.htm names are files; markup is inline.
+Without a mode, paths and bare .html/.htm names (any case) are files; markup is inline.
+File input and resolved paths must still use lowercase .html/.htm extensions.
 Use --html for ambiguous literal text ending in .html or .htm.
 
 ENVIRONMENT VARIABLES:
@@ -104,7 +105,7 @@ if [[ "$INPUT_MODE" == auto ]]; then
   if [[ "$HTML_INPUT" == *'<'* || "$HTML_INPUT" == *'>'* ]]; then
     INPUT_MODE=html
   elif [[ "$HTML_INPUT" == /* || "$HTML_INPUT" == ./* || "$HTML_INPUT" == ../* ||
-          "$HTML_INPUT" == *.html || "$HTML_INPUT" == *.htm ||
+          "$HTML_INPUT" == *.[hH][tT][mM][lL] || "$HTML_INPUT" == *.[hH][tT][mM] ||
           -e "$HTML_INPUT" || -L "$HTML_INPUT" ]]; then
     INPUT_MODE=file
   else
@@ -158,11 +159,15 @@ echo "  To: $RECIPIENT"
 echo "  Subject: $SUBJECT"
 echo ""
 
-# Builtin printf frames fields on stdin; jq encodes without putting content on argv.
+# Builtin printf supplies each field through a descriptor, keeping content off argv.
+# jq 1.6+ --rawfile avoids UTF-8 corruption seen with -Rs on jq 1.7.1-apple.
 # Shell strings cannot contain NUL. Encode successfully before starting curl.
-JSON_PAYLOAD=$(printf '%s\0' "$RECIPIENT" "$FROM_EMAIL" "$SUBJECT" "$HTML_CONTENT" | jq -Rs \
-  'split("\u0000") | .[0] as $to | .[1] as $from | .[2] as $subject | .[3] as $html |
-  {
+JSON_PAYLOAD=$(jq -n \
+  --rawfile to <(printf '%s' "$RECIPIENT") \
+  --rawfile from <(printf '%s' "$FROM_EMAIL") \
+  --rawfile subject <(printf '%s' "$SUBJECT") \
+  --rawfile html <(printf '%s' "$HTML_CONTENT") \
+  '{
     personalizations: [{
       to: [{email: $to}]
     }],
@@ -172,7 +177,11 @@ JSON_PAYLOAD=$(printf '%s\0' "$RECIPIENT" "$FROM_EMAIL" "$SUBJECT" "$HTML_CONTEN
       type: "text/html",
       value: $html
     }]
-  }')
+  }') || {
+  ENCODER_STATUS=$?
+  echo "❌ Error: JSON encoding failed (jq exit $ENCODER_STATUS); no email request was made. Requires jq 1.6+." >&2
+  exit "$ENCODER_STATUS"
+}
 
 # Send via SendGrid API
 RESPONSE=$(curl --disable -sS --connect-timeout 10 --max-time 60 \

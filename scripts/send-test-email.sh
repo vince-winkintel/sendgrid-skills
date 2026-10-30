@@ -18,7 +18,7 @@ if [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
   echo "Send a test email via SendGrid to validate API key and configuration."
   echo "LIVE SEND: approve sender, recipients and exact content before running."
   echo "Data goes to SendGrid and recipients; minimize sensitive data. Use a Mail Send-only key."
-  echo "Requires curl and jq. This helper has no dry-run or approval prompt."
+  echo "Requires curl and jq 1.6+. This helper has no dry-run or approval prompt."
   echo ""
   echo "Examples:"
   echo "  $0 vince@example.com"
@@ -65,11 +65,15 @@ echo "  To: $RECIPIENT"
 echo "  Subject: $SUBJECT"
 echo ""
 
-# Builtin printf frames fields on stdin, keeping content off jq argv as well as curl argv.
+# Builtin printf supplies each field through a descriptor, keeping content off argv.
+# jq 1.6+ --rawfile avoids UTF-8 corruption seen with -Rs on jq 1.7.1-apple.
 # Shell strings cannot contain NUL. jq failure stops the send before transport.
-JSON_PAYLOAD=$(printf '%s\0' "$RECIPIENT" "$FROM" "$SUBJECT" "$MESSAGE" | jq -Rs \
-  'split("\u0000") | .[0] as $to | .[1] as $from | .[2] as $subject | .[3] as $message |
-  {
+JSON_PAYLOAD=$(jq -n \
+  --rawfile to <(printf '%s' "$RECIPIENT") \
+  --rawfile from <(printf '%s' "$FROM") \
+  --rawfile subject <(printf '%s' "$SUBJECT") \
+  --rawfile message <(printf '%s' "$MESSAGE") \
+  '{
     personalizations: [{to: [{email: $to}]}],
     from: {email: $from},
     subject: $subject,
@@ -77,7 +81,11 @@ JSON_PAYLOAD=$(printf '%s\0' "$RECIPIENT" "$FROM" "$SUBJECT" "$MESSAGE" | jq -Rs
       {type: "text/plain", value: $message},
       {type: "text/html", value: ("<p>" + ($message | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\r\n|\r|\n"; "<br>")) + "</p>")}
     ]
-  }')
+  }') || {
+  ENCODER_STATUS=$?
+  echo "❌ Error: JSON encoding failed (jq exit $ENCODER_STATUS); no email request was made. Requires jq 1.6+." >&2
+  exit "$ENCODER_STATUS"
+}
 
 # Send email via SendGrid API
 RESPONSE=$(curl --disable -sS --connect-timeout 10 --max-time 60 \

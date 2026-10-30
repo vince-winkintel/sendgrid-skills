@@ -2,6 +2,10 @@
 
 **Live-send safety:** these examples send real email through SendGrid and may incur charges. Obtain approval for the sender, all To/CC/BCC recipients, exact subject/body, template data and attachments before running them. Recipient data, content and attachments go to SendGrid and recipients. Minimize personal data; never include secrets, regulated data or sensitive files without authorization. Read only approved attachment/HTML files. Use a Mail Send-only API key from the environment and never print it. Use recipients you control for approved tests; example addresses are placeholders, not delivery approval.
 
+## Optional repository helpers
+
+The repository send helpers require Bash 3.2+, curl and jq 1.6+ (`--rawfile`); HTML file input also requires `realpath`. Check `jq --version` before using them. jq reads each field through a descriptor to preserve UTF-8 without putting message content in child-process arguments. These helpers are optional in a standalone subskill installation. The self-contained cURL examples below require Bash and curl, but do not use jq or sibling scripts.
+
 ## Node.js / TypeScript
 
 ```bash
