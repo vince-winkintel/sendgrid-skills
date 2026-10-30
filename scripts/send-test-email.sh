@@ -1,5 +1,7 @@
 #!/bin/bash
 # send-test-email.sh - Send a test email via SendGrid to validate configuration
+# LIVE SEND: obtain approval for sender, all recipients and exact content first.
+# Recipient/content data goes to SendGrid; minimize sensitive data. Mail Send key only.
 #
 # Usage: ./send-test-email.sh <recipient-email> [subject] [message]
 #
@@ -14,6 +16,9 @@ if [[ "$1" == "--help" ]] || [[ "$1" == "-h" ]]; then
   echo "Usage: $0 <recipient-email> [subject] [message]"
   echo ""
   echo "Send a test email via SendGrid to validate API key and configuration."
+  echo "LIVE SEND: approve sender, recipients and exact content before running."
+  echo "Data goes to SendGrid and recipients; minimize sensitive data. Use a Mail Send-only key."
+  echo "Requires curl and jq. This helper has no dry-run or approval prompt."
   echo ""
   echo "Examples:"
   echo "  $0 vince@example.com"
@@ -46,33 +51,39 @@ SUBJECT="${2:-SendGrid Test Email}"
 MESSAGE="${3:-This is a test email sent via SendGrid API to validate configuration.}"
 FROM="${SENDGRID_FROM:-test@example.com}"
 
+echo "LIVE SEND: sending approved recipient/content data to SendGrid. No dry-run."
 echo "📧 Sending test email..."
 echo "  From: $FROM"
 echo "  To: $RECIPIENT"
 echo "  Subject: $SUBJECT"
 echo ""
 
+# Encode every input as data before opening a connection. jq failure stops the send.
+JSON_PAYLOAD=$(jq -n \
+  --arg to "$RECIPIENT" \
+  --arg from "$FROM" \
+  --arg subject "$SUBJECT" \
+  --arg message "$MESSAGE" \
+  '{
+    personalizations: [{to: [{email: $to}]}],
+    from: {email: $from},
+    subject: $subject,
+    content: [
+      {type: "text/plain", value: $message},
+      {type: "text/html", value: ("<p>" + ($message | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")) + "</p>")}
+    ]
+  }')
+
 # Send email via SendGrid API
 RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
   https://api.sendgrid.com/v3/mail/send \
   -H "Authorization: Bearer $SENDGRID_API_KEY" \
   -H "Content-Type: application/json" \
-  -d @- <<EOF
-{
-  "personalizations": [{"to": [{"email": "$RECIPIENT"}]}],
-  "from": {"email": "$FROM"},
-  "subject": "$SUBJECT",
-  "content": [
-    {"type": "text/plain", "value": "$MESSAGE"},
-    {"type": "text/html", "value": "<p>$MESSAGE</p>"}
-  ]
-}
-EOF
-)
+  --data-binary "$JSON_PAYLOAD")
 
 # Extract status code and body
-HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
-BODY=$(echo "$RESPONSE" | head -n-1)
+HTTP_CODE=${RESPONSE##*$'\n'}
+BODY=${RESPONSE%$'\n'*}
 
 # Check response
 if [[ "$HTTP_CODE" == "202" ]]; then
