@@ -51,6 +51,7 @@ echo "🔍 Verifying Inbound Parse setup for: $HOSTNAME"
 echo ""
 
 # Check if dig is available
+USE_NSLOOKUP=0
 if ! command -v dig &> /dev/null; then
   echo "⚠️  Warning: 'dig' command not found, using 'nslookup' instead"
   USE_NSLOOKUP=1
@@ -58,10 +59,22 @@ fi
 
 # Check MX record
 echo "📝 Checking MX record..."
-if [[ -n "$USE_NSLOOKUP" ]]; then
-  MX_RECORDS=$(nslookup -type=MX "$HOSTNAME" 2>&1 | grep "mail exchanger" || true)
+if [[ "$USE_NSLOOKUP" == 1 ]]; then
+  DNS_RESPONSE=$(nslookup -type=MX "$HOSTNAME") || {
+    DNS_STATUS=$?
+    echo "❌ Error: DNS lookup failed (nslookup exit $DNS_STATUS)" >&2
+    exit "$DNS_STATUS"
+  }
+  MX_RECORDS=$(printf '%s\n' "$DNS_RESPONSE" | awk '
+    NF == 6 && $2 == "mail" && $3 == "exchanger" && $4 == "=" && $5 ~ /^[0-9]+$/ {print $5, $6}
+  ')
 else
-  MX_RECORDS=$(dig +short MX "$HOSTNAME" 2>&1 || true)
+  DNS_RESPONSE=$(dig +short MX "$HOSTNAME") || {
+    DNS_STATUS=$?
+    echo "❌ Error: DNS lookup failed (dig exit $DNS_STATUS)" >&2
+    exit "$DNS_STATUS"
+  }
+  MX_RECORDS=$(printf '%s\n' "$DNS_RESPONSE" | awk 'NF == 2 && $1 ~ /^[0-9]+$/ {print $1, $2}')
 fi
 
 if [[ -z "$MX_RECORDS" ]]; then
@@ -81,8 +94,11 @@ echo "✅ MX records found:"
 echo "$MX_RECORDS"
 echo ""
 
-# Check if mx.sendgrid.net is in records
-if echo "$MX_RECORDS" | grep -q "mx.sendgrid.net"; then
+# Compare the exchange field exactly, ignoring DNS case and one trailing dot.
+if printf '%s\n' "$MX_RECORDS" | awk '
+  {exchange = tolower($2); sub(/\.$/, "", exchange); if (exchange == "mx.sendgrid.net") found = 1}
+  END {exit !found}
+'; then
   echo "✅ MX record correctly points to mx.sendgrid.net"
 else
   echo "⚠️  Warning: MX record does not point to mx.sendgrid.net"
@@ -110,6 +126,6 @@ echo "  1. Configure Inbound Parse in SendGrid Console"
 echo "     → Settings → Inbound Parse → Add Host & URL"
 echo "  2. Set Hostname: $HOSTNAME"
 echo "  3. Review an owned, trusted HTTPS destination and its authentication separately."
-echo "  4. Only after recipient/content approval, send a live test email to an address you control."
+echo "  4. Only after recipient/content approval, send a live test email to anything@$HOSTNAME (your controlled parse hostname)."
 echo ""
 echo "Note: DNS propagation can take up to 48 hours"

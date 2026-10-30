@@ -38,6 +38,13 @@ if [[ -z "$SENDGRID_API_KEY" ]]; then
   echo "Then set it: export SENDGRID_API_KEY=SG.xxxxxxxxx"
   exit 1
 fi
+# Restrict the key alphabet before writing a curl config/header. Reject controls,
+# quotes and backslashes rather than interpreting or trying to escape them.
+if [[ ! "$SENDGRID_API_KEY" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  echo "❌ Error: SENDGRID_API_KEY contains unsupported characters" >&2
+  exit 1
+fi
+
 
 # Validate recipient
 if [[ -z "$1" ]]; then
@@ -58,28 +65,31 @@ echo "  To: $RECIPIENT"
 echo "  Subject: $SUBJECT"
 echo ""
 
-# Encode every input as data before opening a connection. jq failure stops the send.
-JSON_PAYLOAD=$(jq -n \
-  --arg to "$RECIPIENT" \
-  --arg from "$FROM" \
-  --arg subject "$SUBJECT" \
-  --arg message "$MESSAGE" \
-  '{
+# Builtin printf frames fields on stdin, keeping content off jq argv as well as curl argv.
+# Shell strings cannot contain NUL. jq failure stops the send before transport.
+JSON_PAYLOAD=$(printf '%s\0' "$RECIPIENT" "$FROM" "$SUBJECT" "$MESSAGE" | jq -Rs \
+  'split("\u0000") | .[0] as $to | .[1] as $from | .[2] as $subject | .[3] as $message |
+  {
     personalizations: [{to: [{email: $to}]}],
     from: {email: $from},
     subject: $subject,
     content: [
       {type: "text/plain", value: $message},
-      {type: "text/html", value: ("<p>" + ($message | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;")) + "</p>")}
+      {type: "text/html", value: ("<p>" + ($message | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;") | gsub("\r\n|\r|\n"; "<br>")) + "</p>")}
     ]
   }')
 
 # Send email via SendGrid API
-RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+RESPONSE=$(curl --disable -sS --connect-timeout 10 --max-time 60 \
+  --proto =https --noproxy '*' -w "\n%{http_code}" -X POST \
   https://api.sendgrid.com/v3/mail/send \
-  -H "Authorization: Bearer $SENDGRID_API_KEY" \
+  --config <(printf 'header = "Authorization: Bearer %s"\n' "$SENDGRID_API_KEY") \
   -H "Content-Type: application/json" \
-  --data-binary "$JSON_PAYLOAD")
+  --data-binary @- <<<"$JSON_PAYLOAD") || {
+  CURL_STATUS=$?
+  echo "❌ Error: request to SendGrid failed (curl exit $CURL_STATUS); delivery status is unknown. Do not retry automatically." >&2
+  exit "$CURL_STATUS"
+}
 
 # Extract status code and body
 HTTP_CODE=${RESPONSE##*$'\n'}

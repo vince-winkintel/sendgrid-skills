@@ -28,19 +28,24 @@ import json, os, pathlib, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 body = sys.stdin.read() if "@-" in args else ""
+record = {"tool": name, "args": args, "stdin": body}
+if "--config" in args:
+    record["config"] = pathlib.Path(args[args.index("--config") + 1]).read_text()
 with open(os.environ["RECORD"], "a") as f:
-    f.write(json.dumps({"tool": name, "args": args, "stdin": body}) + "\n")
+    f.write(json.dumps(record) + "\n")
 if name == "curl":
     print(os.environ.get("RESPONSE_BODY", ""))
     print(os.environ.get("HTTP_STATUS", "202"), end="")
     sys.exit(int(os.environ.get("CURL_EXIT", "0")))
 if name == "dig":
-    print(os.environ.get("MX_RECORDS", "10 mx.sendgrid.net.") if "MX" in args
-          else os.environ.get("ADDRESS_RECORDS", "127.0.0.1"))
+    print(os.environ.get("MX_RECORDS", "10 mx.sendgrid.net."))
 elif name == "nslookup":
     print("parse.example.com mail exchanger = " + os.environ.get("MX_RECORDS", "10 mx.sendgrid.net."))
 else:
-    print(os.environ.get("ADDRESS_RECORDS", "127.0.0.1"))
+    sys.exit("Unexpected network tool: " + name)
+if os.environ.get("DNS_STDERR"):
+    print(os.environ["DNS_STDERR"], file=sys.stderr)
+sys.exit(int(os.environ.get("DNS_EXIT", "0")))
 '''
 
 
@@ -52,7 +57,7 @@ class HelperTests(unittest.TestCase):
         self.bin = self.work / "bin"
         self.bin.mkdir()
         self.record = self.work / "transport.jsonl"
-        for name in ("bash", "jq", "node", "cat", "head", "tail", "grep", "basename", "realpath"):
+        for name in ("bash", "jq", "node", "cat", "head", "tail", "grep", "awk", "basename", "realpath"):
             executable = shutil.which(name)
             if not executable:
                 self.fail("Required test dependency missing: " + name)
@@ -67,6 +72,7 @@ class HelperTests(unittest.TestCase):
             "LC_ALL": "C", "RECORD": str(self.record),
             "SENDGRID_API_KEY": "SG.synthetic-regression-only",
             "SENDGRID_FROM": "sender@example.com",
+            "PYTHONDONTWRITEBYTECODE": "1",
         }
 
     def run_helper(self, name, *args, input=None):
@@ -85,7 +91,8 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(call["tool"], "curl")
         args = call["args"]
         self.assertIn("https://api.sendgrid.com/v3/mail/send", args)
-        self.assertIn("Authorization: Bearer SG.synthetic-regression-only", args)
+        self.assertIn("Authorization: Bearer SG.synthetic-regression-only",
+                      call.get("config", " ".join(args)))
         self.assertIn("Content-Type: application/json", args)
         self.assertIn("POST", args)
         flag = next(flag for flag in ("--data-binary", "--data", "-d") if flag in args)
@@ -107,7 +114,7 @@ class HelperTests(unittest.TestCase):
             "personalizations": [{"to": [{"email": recipient}]}],
             "from": {"email": sender}, "subject": subject,
             "content": [{"type": "text/plain", "value": message},
-                        {"type": "text/html", "value": "<p>" + message + "</p>"}],
+                        {"type": "text/html", "value": "<p>" + message.replace("\r\n", "<br>") + "</p>"}],
         })
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
         self.assertFalse((self.work / "NEVER").exists())
@@ -120,6 +127,15 @@ class HelperTests(unittest.TestCase):
         ])
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_plain_line_endings_become_html_breaks_after_escaping(self):
+        message = "<b>&one</b>\r\ntwo\nthree\rfour\n"
+        result = self.run_helper("send-test-email.sh", "test@example.com", "Test", message)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.payload()["content"], [
+            {"type": "text/plain", "value": message},
+            {"type": "text/html", "value": "<p>&lt;b&gt;&amp;one&lt;/b&gt;<br>two<br>three<br>four<br></p>"},
+        ])
+
     def test_html_helper_preserves_encoded_data_and_success(self):
         html = '<p title="quoted">雪 & more\\\nsecond\tline</p>'
         result = self.run_helper("send-html-email.sh", "test@example.com", 'Test "quotes"', html)
@@ -130,48 +146,158 @@ class HelperTests(unittest.TestCase):
         })
         self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
 
+    def test_html_file_mode_uses_portable_realpath(self):
+        for name in ("report.html", "space report.htm", "-report.html"):
+            path = self.work / name
+            path.write_text('<p title="quoted">approved 雪</p>')
+            for argument in (name, "./" + name, str(path)):
+                with self.subTest(argument=argument):
+                    self.record.unlink(missing_ok=True)
+                    result = self.run_helper("send-html-email.sh", "test@example.com", "Test", argument)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertEqual(self.payload()["content"][0]["value"], path.read_text())
+
+    def test_html_missing_paths_fail_before_transport(self):
+        (self.work / "directory.html").mkdir()
+        (self.work / "wrong.txt").write_text("synthetic non-HTML")
+        (self.work / "broken.html").symlink_to(self.work / "absent.html")
+        for argument in ("newsletter.html", "newsletter.htm", "subdir/report.html",
+                         "./absent.html", str(self.work / "absent.html"),
+                         "../report.html", "report..html", "directory.html", "wrong.txt", "broken.html"):
+            with self.subTest(argument=argument):
+                self.record.unlink(missing_ok=True)
+                result = self.run_helper("send-html-email.sh", "test@example.com", "Test", argument)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.calls(), [])
+
+    def test_html_symlink_target_requires_html_suffix(self):
+        # All targets are synthetic files in scratch, never real credential paths.
+        for target in ("synthetic-secret.txt", "approved.htm"):
+            (self.work / target).write_text("synthetic fixture")
+            link = self.work / "report.html"
+            link.unlink(missing_ok=True)
+            link.symlink_to(self.work / target)
+            self.record.unlink(missing_ok=True)
+            result = self.run_helper("send-html-email.sh", "test@example.com", "Test", str(link))
+            if target.endswith(".txt"):
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Resolved", result.stdout + result.stderr)
+                self.assertEqual(self.calls(), [])
+            else:
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.payload()["content"][0]["value"], "synthetic fixture")
+
+    def record_encoder(self):
+        executable = str((self.bin / "jq").resolve())
+        (self.bin / "jq").unlink()
+        (self.bin / "jq").write_text("#!" + sys.executable + "\n" +
+            "import json, os, sys\n" +
+            "with open(os.environ['ENCODER_RECORD'], 'a') as f:\n" +
+            "    f.write(json.dumps(sys.argv[1:]) + '\\n')\n" +
+            "os.execv(" + repr(executable) + ", ['jq', *sys.argv[1:]])\n")
+        (self.bin / "jq").chmod(0o755)
+        self.env["ENCODER_RECORD"] = str(self.work / "encoder.jsonl")
+
+    def test_send_payload_and_auth_stay_off_child_argv(self):
+        self.record_encoder()
+        for helper in ("send-test-email.sh", "send-html-email.sh"):
+            with self.subTest(helper=helper):
+                self.record.unlink(missing_ok=True)
+                result = self.run_helper(helper, "private@example.com", "private-subject", "private-body")
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                call = self.calls()[0]
+                self.assertIn("--data-binary", call["args"])
+                self.assertEqual(call["args"][call["args"].index("--data-binary") + 1], "@-")
+                self.assertEqual(call["config"], 'header = "Authorization: Bearer SG.synthetic-regression-only"\n')
+                encoded_args = Path(self.env["ENCODER_RECORD"]).read_text()
+                for value in ("private@example.com", "private-subject", "private-body", self.env["SENDGRID_API_KEY"]):
+                    self.assertNotIn(value, json.dumps(call["args"]) + encoded_args)
+                self.assertEqual(self.payload()["subject"], "private-subject")
+
+    def test_large_html_file_does_not_use_process_argv_for_content(self):
+        self.record_encoder()
+        content = "<p>" + "synthetic-body " * 30000 + "</p>"
+        path = self.work / "large.html"
+        path.write_text(content)
+        result = self.run_helper("send-html-email.sh", "test@example.com", "Large", str(path))
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.payload()["content"][0]["value"], content)
+        self.assertFalse("synthetic-body" in Path(self.env["ENCODER_RECORD"]).read_text(),
+                         "Message body leaked into encoder argv")
+
+    def test_api_key_cannot_inject_curl_config_or_headers(self):
+        for helper in ("send-test-email.sh", "send-html-email.sh"):
+            for key in ('SG.bad"quote', 'SG.bad\\escape', 'SG.bad\r\nX-Injected: yes',
+                        'SG.bad\nurl = "https://example.com"', 'SG.bad\tvalue', 'SG.bad value'):
+                with self.subTest(helper=helper, key=repr(key)):
+                    self.record.unlink(missing_ok=True)
+                    self.env["SENDGRID_API_KEY"] = key
+                    result = self.run_helper(helper, "test@example.com", "Test", "Body")
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(self.calls(), [])
+                    self.assertNotIn(key, result.stdout + result.stderr)
+
+    def test_send_transport_is_bounded_and_does_not_follow_redirects_or_proxies(self):
+        self.env.update(HTTPS_PROXY="http://proxy.invalid", ALL_PROXY="socks5://proxy.invalid")
+        for helper in ("send-test-email.sh", "send-html-email.sh"):
+            with self.subTest(helper=helper):
+                self.record.unlink(missing_ok=True)
+                self.env["HTTP_STATUS"] = "302"
+                result = self.run_helper(helper, "test@example.com", "Test", "Body")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(len(self.calls()), 1)
+                args = self.calls()[0]["args"]
+                self.assertEqual(args[0], "--disable")
+                for flag, value in (("--proto", "=https"), ("--noproxy", "*"),
+                                    ("--connect-timeout", "10"), ("--max-time", "60")):
+                    self.assertIn(flag, args)
+                    self.assertEqual(args[args.index(flag) + 1], value)
+                self.assertIn("-sS", args)
+                for flag in ("--location", "-L", "--retry", "--insecure", "-k"):
+                    self.assertNotIn(flag, args)
+
+    def test_send_transport_failure_preserves_status_and_unknown_delivery(self):
+        for helper in ("send-test-email.sh", "send-html-email.sh"):
+            for code in (7, 28, 35, 52, 56):
+                with self.subTest(helper=helper, code=code):
+                    self.record.unlink(missing_ok=True)
+                    self.env["CURL_EXIT"] = str(code)
+                    result = self.run_helper(helper, "test@example.com", "Test", "Body")
+                    self.assertEqual(result.returncode, code)
+                    self.assertIn("request to SendGrid failed", result.stderr)
+                    self.assertIn("delivery status is unknown", result.stderr)
+                    self.assertIn("Do not retry automatically", result.stderr)
+                    self.assertNotIn("Success!", result.stdout)
+                    self.assertEqual(len(self.calls()), 1)
+
+    def test_html_explicit_modes_disambiguate_inline_and_file(self):
+        (self.work / "newsletter.html").write_text("file contents")
+        for args, expected in [
+            (("--file", "newsletter.html"), "file contents"),
+            (("--html", "newsletter.html"), "newsletter.html"),
+            (("--html", "--dry-run"), "--dry-run"),
+            (("<p>See report</p> newsletter.html",), "<p>See report</p> newsletter.html"),
+            (("--html", "./newsletter.html"), "./newsletter.html"),
+        ]:
+            with self.subTest(args=args):
+                self.record.unlink(missing_ok=True)
+                result = self.run_helper("send-html-email.sh", "test@example.com", "Test", *args)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertEqual(self.payload()["content"][0]["value"], expected)
+        for args in (("--file", "missing.html"), ("--html", ""), ("--file",),
+                     ("--dry-run",), ("--unknown",),
+                     ("--unknown", "value"), ("inline", "extra")):
+            with self.subTest(args=args):
+                self.record.unlink(missing_ok=True)
+                result = self.run_helper("send-html-email.sh", "test@example.com", "Test", *args)
+                self.assertEqual(self.calls(), [])
+                self.assertNotEqual(result.returncode, 0)
+
     def test_webhook_arguments_are_rejected_before_any_network(self):
-        # The boundary removes probing, rather than classifying addresses. Even
-        # mixed/rebinding DNS fixtures must never be consulted or connected to.
-        cases = [
-            ("https://127.0.0.1/", "127.0.0.1"),
-            ("https://localhost/", "::1"),
-            ("https://10.0.0.1/", "10.0.0.1"),
-            ("https://172.16.0.1/", "172.16.0.1"),
-            ("https://192.168.1.1/", "192.168.1.1"),
-            ("https://169.254.169.254/", "169.254.169.254"),
-            ("https://100.64.0.1/", "100.64.0.1"),
-            ("https://192.0.2.1/", "192.0.2.1"),
-            ("https://0.0.0.0/", "0.0.0.0"),
-            ("https://224.0.0.1/", "224.0.0.1"),
-            ("https://240.0.0.1/", "240.0.0.1"),
-            ("https://2130706433/", "127.0.0.1"),
-            ("https://0177.0.0.1/", "127.0.0.1"),
-            ("https://0x7f000001/", "127.0.0.1"),
-            ("https://127.1/", "127.0.0.1"),
-            ("https://[::1]/", "::1"),
-            ("https://[::ffff:127.0.0.1]/", "::ffff:127.0.0.1"),
-            ("https://[fc00::1]/", "fc00::1"),
-            ("https://[fe80::1%25eth0]/", "fe80::1"),
-            ("https://[2001:db8::1]/", "2001:db8::1"),
-            ("https://mixed.example/", "93.184.216.34\n10.0.0.1\n::1"),
-            ("https://rebind.example/", "93.184.216.34\n127.0.0.1"),
-            ("https://service.internal/", "192.168.1.2"),
-            ("https://public.example/redirect", "93.184.216.34"),
-            ("https://public.example@127.0.0.1/", "127.0.0.1"),
-            ("http://127.0.0.1/", "127.0.0.1"),
-            ("file:///synthetic-only", ""),
-            ("--help", ""), ("", ""),
-        ]
-        for url, addresses in cases:
+        # This is argument rejection, not URL or DNS classification.
+        for url in ("https://example.com/webhook", ""):
             with self.subTest(url=url):
-                if self.record.exists():
-                    self.record.unlink()
-                self.env.update({"ADDRESS_RECORDS": addresses,
-                                 "HTTP_STATUS": "302",
-                                 "https_proxy": "http://127.0.0.1:8080",
-                                 "HTTPS_PROXY": "http://127.0.0.1:8080",
-                                 "ALL_PROXY": "socks5://127.0.0.1:1080"})
+                self.record.unlink(missing_ok=True)
                 result = self.run_helper("verify-inbound-setup.sh", "parse.example.com", url)
                 self.assertEqual(self.calls(), [], "Rejected URL must not cause DNS or HTTP calls")
                 self.assertNotEqual(result.returncode, 0)
@@ -183,6 +309,13 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(self.calls(), [{"tool": "dig", "args": ["+short", "MX", "parse.example.com"], "stdin": ""}])
         self.assertIn("Webhook accessibility and authentication were not tested", result.stdout)
 
+    def test_inbound_next_step_targets_the_parse_hostname_after_approval(self):
+        result = self.run_helper("verify-inbound-setup.sh", "parse.example.com")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Only after recipient/content approval", result.stdout)
+        self.assertIn("anything@parse.example.com", result.stdout)
+        self.assertEqual([call["tool"] for call in self.calls()], ["dig"])
+
     def test_mx_fallback_and_failure(self):
         (self.bin / "dig").unlink()
         result = self.run_helper("verify-inbound-setup.sh", "parse.example.com")
@@ -193,6 +326,38 @@ class HelperTests(unittest.TestCase):
         result = self.run_helper("verify-inbound-setup.sh", "parse.example.com")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual([call["tool"] for call in self.calls()], ["nslookup"])
+
+    def test_mx_exchange_must_match_exactly_for_both_resolvers(self):
+        cases = [("10 mx.sendgrid.net.", True), ("5 MX.SENDGRID.NET", True),
+                 ("10 mx.sendgrid.net.evil.example.", False), ("10 mxxsendgrid.net.", False),
+                 ("10 prefix.mx.sendgrid.net.", False), ("10 mx.sendgrid.net..", False),
+                 ("mx.sendgrid.net", False), ("bad mx.sendgrid.net.", False),
+                 ("10 other.example. mx.sendgrid.net.", False), ("", False),
+                 (";; connection timed out; no servers could be reached", False)]
+        for resolver in ("dig", "nslookup"):
+            if resolver == "nslookup":
+                (self.bin / "dig").unlink()
+            for records, expected in cases:
+                with self.subTest(resolver=resolver, records=records):
+                    self.record.unlink(missing_ok=True)
+                    self.env["MX_RECORDS"] = records
+                    result = self.run_helper("verify-inbound-setup.sh", "parse.example.com")
+                    self.assertEqual(result.returncode == 0, expected, result.stdout + result.stderr)
+                    self.assertEqual([call["tool"] for call in self.calls()], [resolver])
+                    if not expected:
+                        self.assertNotIn("MX record configured correctly", result.stdout)
+
+    def test_mx_lookup_failure_is_not_reported_as_records(self):
+        for resolver in ("dig", "nslookup"):
+            if resolver == "nslookup":
+                (self.bin / "dig").unlink()
+            self.env.update(DNS_EXIT="9", MX_RECORDS="10 mx.sendgrid.net.", DNS_STDERR="synthetic timeout")
+            self.record.unlink(missing_ok=True)
+            result = self.run_helper("verify-inbound-setup.sh", "parse.example.com")
+            self.assertEqual(result.returncode, 9)
+            self.assertIn("DNS lookup failed", result.stderr)
+            self.assertNotIn("MX records found", result.stdout)
+            self.assertEqual([call["tool"] for call in self.calls()], [resolver])
 
     def test_helpers_disclose_live_sends_and_parser_trust_boundary(self):
         for helper in ("send-test-email.sh", "send-html-email.sh"):
@@ -257,7 +422,7 @@ class HelperTests(unittest.TestCase):
     def run_curl_examples(self, relative):
         document = (ROOT / relative).read_text()
         blocks = [block for block in re.findall(r"```bash\n(.*?)```", document, re.S)
-                  if block.lstrip().startswith("curl ")]
+                  if "curl " in block]
         self.assertTrue(blocks, "Expected executable curl examples in " + relative)
         for block in blocks:
             if self.record.exists():
@@ -317,11 +482,39 @@ class HelperTests(unittest.TestCase):
                 self.assertEqual(len(actual), 1)
                 self.assertEqual(actual[0]["tool"], "curl")
                 args = actual[0]["args"]
-                self.assertEqual(args[:8], ["-X", "POST", "https://api.sendgrid.com/v3/mail/send",
-                                           "-H", "Authorization: Bearer SG.synthetic-regression-only",
-                                           "-H", "Content-Type: application/json", "-d"])
-                self.assertEqual(len(args), 9)
-                self.assertEqual(json.loads(args[8]), payload)
+                self.assertEqual(args[0], "--disable")
+                self.assertIn("https://api.sendgrid.com/v3/mail/send", args)
+                self.assertIn("POST", args)
+                self.assertIn("Content-Type: application/json", args)
+                self.assertIn("--data-binary", args)
+                self.assertEqual(args[args.index("--data-binary") + 1], "@-")
+                self.assertNotIn(self.env["SENDGRID_API_KEY"], json.dumps(args))
+                self.assertEqual(actual[0]["config"], 'header = "Authorization: Bearer SG.synthetic-regression-only"\n')
+                self.assertEqual(json.loads(actual[0]["stdin"]), payload)
+
+    def test_standalone_mail_examples_reject_keys_and_report_transport_failure(self):
+        for relative in ("send-email/references/installation.md", "send-email/references/single-email-examples.md"):
+            blocks = [block for block in re.findall(r"```bash\n(.*?)```", (ROOT / relative).read_text(), re.S)
+                      if "curl " in block]
+            self.assertTrue(blocks)
+            for block in blocks:
+                for key, code, status in [('SG.bad\nX-Test: yes', "0", "202"),
+                                          ('SG.synthetic-regression-only', "28", "202"),
+                                          ('SG.synthetic-regression-only', "0", "302")]:
+                    with self.subTest(relative=relative, code=code, status=status, key=repr(key)):
+                        self.record.unlink(missing_ok=True)
+                        self.env.update(SENDGRID_API_KEY=key, CURL_EXIT=code, HTTP_STATUS=status)
+                        result = subprocess.run([str(self.bin / "bash"), "-c", block], env=self.env,
+                                                cwd=self.work, capture_output=True, text=True, timeout=10)
+                        self.assertNotEqual(result.returncode, 0)
+                        if key.startswith("SG.bad"):
+                            self.assertEqual(self.calls(), [])
+                            self.assertNotIn(key, result.stdout + result.stderr)
+                        else:
+                            self.assertEqual(len(self.calls()), 1)
+                            if code != "0":
+                                self.assertEqual(result.returncode, int(code))
+                                self.assertIn("delivery status is unknown", result.stderr)
 
     def test_missing_key_and_invalid_dns_input_do_not_use_transport(self):
         self.env.pop("SENDGRID_API_KEY")
